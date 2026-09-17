@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TG-POS Mobile Product Import</title>
+
+<!-- DOCX generator -->
+<!-- Offline mode: no external libraries required. -->
+
+<style>
+:root{
+  --navy:#0b1f3a;
+  --navy2:#102b50;
+  --green:#16834b;
+  --green2:#20a15e;
+  --red:#8f2030;
+  --orange:#e78324;
+  --bg:#f3f6f9;
+  --card:#fff;
+  --text:#18212b;
+  --muted:#6d7885;
+  --border:#dce3ea;
+  --danger:#c62828;
+  --shadow:0 8px 24px rgba(11,31,58,.10);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Arial,Helvetica,sans-serif;
+}
+header{
+  background:linear-gradient(135deg,var(--navy),var(--navy2));
+  color:#fff;
+  padding:18px 16px;
+  position:sticky;
+  top:0;
+  z-index:20;
+  box-shadow:0 3px 14px rgba(0,0,0,.18);
+}
+.header-inner{max-width:760px;margin:auto}
+.logo{
+  font-weight:900;
+  font-size:23px;
+  letter-spacing:.5px;
+}
+.subtitle{font-size:13px;opacity:.82;margin-top:3px}
+main{max-width:760px;margin:auto;padding:16px 12px 45px}
+.card{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:16px;
+  box-shadow:var(--shadow);
+  padding:16px;
+  margin-bottom:15px;
+}
+.card h2{font-size:17px;margin:0 0 14px;color:var(--navy)}
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:11px;
+}
+.field.full{grid-column:1/-1}
+label{
+  display:block;
+  font-size:12px;
+  font-weight:700;
+  margin:0 0 6px;
+  color:#3e4b59;
+}
+input,select{
+  width:100%;
+  min-height:46px;
+  border:1px solid #cfd8e1;
+  border-radius:10px;
+  padding:10px 11px;
+  font-size:16px;
+  background:#fff;
+  outline:none;
+}
+input:focus,select:focus{border-color:var(--green2);box-shadow:0 0 0 3px rgba(32,161,94,.12)}
+.barcode-row{display:flex;gap:8px}
+.barcode-row input{flex:1}
+button{
+  border:0;
+  border-radius:10px;
+  min-height:46px;
+  padding:0 15px;
+  font-size:15px;
+  font-weight:800;
+  cursor:pointer;
+}
+.scan-btn{background:var(--orange);color:#fff;white-space:nowrap}
+.add-btn{background:var(--green);color:#fff;width:100%;margin-top:14px;font-size:16px}
+.done-btn{background:var(--navy);color:#fff;width:100%;font-size:16px}
+.clear-btn{background:#eef1f4;color:#34404c}
+.small-note{font-size:11px;color:var(--muted);margin-top:5px}
+.count{
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:25px;height:25px;border-radius:50%;
+  background:var(--green);color:white;font-size:12px;margin-left:5px;
+}
+.product-list{display:flex;flex-direction:column;gap:9px}
+.product-item{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:11px;
+  background:#fbfcfd;
+}
+.product-top{display:flex;justify-content:space-between;gap:8px}
+.product-name{font-weight:800;color:var(--navy)}
+.product-barcode{font-size:12px;color:var(--muted);margin-top:3px}
+.product-meta{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:4px 12px;margin-top:9px;font-size:12px;color:#4c5966
+}
+.remove-btn{
+  min-height:34px;padding:0 10px;background:#fdecec;color:var(--danger);
+  font-size:12px;
+}
+.empty{text-align:center;color:var(--muted);font-size:13px;padding:12px}
+.actions{display:grid;grid-template-columns:1fr 1.5fr;gap:9px}
+#scannerModal{
+  display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100;
+  align-items:center;justify-content:center;padding:14px;
+}
+.scanner-box{
+  width:min(560px,100%);background:#111;border-radius:18px;overflow:hidden;
+  color:#fff;position:relative;
+}
+.scanner-head{padding:13px 14px;display:flex;justify-content:space-between;align-items:center}
+.close-scanner{background:#333;color:#fff;min-height:38px}
+#scannerVideo{display:block;width:100%;height:auto;max-height:65vh;object-fit:cover;background:#000}
+.scanner-tip{padding:12px 14px;font-size:12px;color:#ddd}
+.scan-line{
+  position:absolute;left:12%;right:12%;top:48%;height:2px;background:#20d26d;
+  box-shadow:0 0 10px #20d26d;
+}
+.status{
+  display:none;padding:10px 12px;border-radius:9px;margin-bottom:12px;font-size:13px;font-weight:700
+}
+.status.success{display:block;background:#e8f7ef;color:#12643a}
+.status.error{display:block;background:#fdecec;color:#a21e1e}
+@media(max-width:560px){
+  .grid{grid-template-columns:1fr}
+  .field.full{grid-column:auto}
+  main{padding:12px 10px 35px}
+  .card{padding:13px}
+  .actions{grid-template-columns:1fr}
+}
+</style>
+</head>
+
+<body>
+<header>
+  <div class="header-inner">
+    <div class="logo">TG-POS</div>
+    <div class="subtitle">Mobile / Tablet • Product Import Builder</div>
+  </div>
+</header>
+
+<main>
+  <div class="card" style="border-left:5px solid var(--green)"><b>OFFLINE MODE</b><div class="small-note">This page can be opened directly from your phone/tablet as an HTML file. Product list and Word export do not require a web server.</div></div>
+  <div id="status" class="status"></div>
+
+  <section class="card">
+    <h2>Add Product</h2>
+
+    <div class="grid">
+      <div class="field full">
+        <label for="barcode">Barcode</label>
+        <div class="barcode-row">
+          <input id="barcode" type="text" inputmode="numeric" autocomplete="off" placeholder="Scan or type barcode">
+          <button type="button" class="scan-btn" id="scanBtn">📷 Scan</button>
+        </div>
+        <div class="small-note">Tap Scan to open the camera when your browser permits camera access. This page itself needs no HTTP server.</div>
+      </div>
+
+      <div class="field full">
+        <label for="productName">Product Name</label>
+        <input id="productName" type="text" placeholder="e.g. Rice">
+      </div>
+
+      <div class="field">
+        <label for="wholesaleStock">Wholesale Stock</label>
+        <input id="wholesaleStock" type="number" min="0" step="0.001" placeholder="0">
+      </div>
+      <div class="field">
+        <label for="wholesaleCapital">Wholesale Capital</label>
+        <input id="wholesaleCapital" type="number" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label for="wholesaleSelling">Wholesale Selling</label>
+        <input id="wholesaleSelling" type="number" min="0" step="0.01" placeholder="0.00">
+      </div>
+
+      <div class="field">
+        <label for="retailStock">Retail Stock</label>
+        <input id="retailStock" type="number" min="0" step="0.001" placeholder="0">
+      </div>
+      <div class="field">
+        <label for="retailCapital">Retail Capital</label>
+        <input id="retailCapital" type="number" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label for="retailSelling">Retail Selling</label>
+        <input id="retailSelling" type="number" min="0" step="0.01" placeholder="0.00">
+      </div>
+
+      <div class="field">
+        <label for="retailUnit">Retail Unit</label>
+        <select id="retailUnit">
+          <option value="kg">kg</option>
+          <option value="piece">piece</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="deviceAssigned">Device Assigned</label>
+        <select id="deviceAssigned">
+          <option value="Device 1">Device 1</option>
+          <option value="Device 1 || Device 2">Device 1 || Device 2</option>
+          <option value="All Devices">All Devices</option>
+        </select>
+      </div>
+    </div>
+
+    <button type="button" class="add-btn" id="addBtn">＋ Add Product</button>
+  </section>
+
+  <section class="card">
+    <h2>Products to Export <span class="count" id="count">0</span></h2>
+    <div id="productList" class="product-list">
+      <div class="empty">No products added yet.</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Finish</h2>
+    <div class="small-note" style="margin-bottom:12px">
+      Tap Done when all products have been added. A Word-compatible (.doc) file will be created using the same column structure as the uploaded TG-POS import template. No HTTP server or internet connection is required.
+    </div>
+    <div class="actions">
+      <button type="button" class="clear-btn" id="clearAllBtn">Clear All</button>
+      <button type="button" class="done-btn" id="doneBtn">✓ Done — Create Word File</button>
+    </div>
+  </section>
+</main>
+
+<div id="scannerModal">
+  <div class="scanner-box">
+    <div class="scanner-head">
+      <strong>Scan Barcode</strong>
+      <button type="button" class="close-scanner" id="closeScanner">✕</button>
+    </div>
+    <div style="position:relative">
+      <video id="scannerVideo" autoplay muted playsinline></video>
+      <div class="scan-line"></div>
+    </div>
+    <div class="scanner-tip">Center the barcode inside the camera view. The scanner will fill the Barcode field automatically.</div>
+  </div>
+</div>
+
+<script>
+const products = [];
+let scannerControls = null;
+
+const $ = id => document.getElementById(id);
+
+function showStatus(message, type="success"){
+  const el = $("status");
+  el.textContent = message;
+  el.className = "status " + type;
+  clearTimeout(showStatus.timer);
+  showStatus.timer = setTimeout(()=>{ el.className="status"; }, 3500);
+}
+
+function num(id){
+  const v = parseFloat($(id).value);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function getFormProduct(){
+  return {
+    barcode: $("barcode").value.trim(),
+    productName: $("productName").value.trim(),
+    wholesaleStock: num("wholesaleStock"),
+    wholesaleCapital: num("wholesaleCapital"),
+    wholesaleSelling: num("wholesaleSelling"),
+    retailStock: num("retailStock"),
+    retailCapital: num("retailCapital"),
+    retailSelling: num("retailSelling"),
+    retailUnit: $("retailUnit").value,
+    deviceAssigned: $("deviceAssigned").value
+  };
+}
+
+function validateProduct(p){
+  if(!p.barcode) return "Barcode is required.";
+  if(!p.productName) return "Product Name is required.";
+  if(products.some(x => x.barcode === p.barcode)) return "That barcode is already in the list.";
+  return "";
+}
+
+function clearForm(){
+  $("barcode").value="";
+  $("productName").value="";
+  $("wholesaleStock").value="";
+  $("wholesaleCapital").value="";
+  $("wholesaleSelling").value="";
+  $("retailStock").value="";
+  $("retailCapital").value="";
+  $("retailSelling").value="";
+  $("retailUnit").value="kg";
+  $("deviceAssigned").value="Device 1";
+  $("barcode").focus();
+}
+
+function renderProducts(){
+  $("count").textContent = products.length;
+  const list = $("productList");
+  if(!products.length){
+    list.innerHTML='<div class="empty">No products added yet.</div>';
+    return;
+  }
+  list.innerHTML = products.map((p,i)=>`
+    <div class="product-item">
+      <div class="product-top">
+        <div>
+          <div class="product-name">${escapeHtml(p.productName)}</div>
+          <div class="product-barcode">Barcode: ${escapeHtml(p.barcode)}</div>
+        </div>
+        <button class="remove-btn" type="button" onclick="removeProduct(${i})">Remove</button>
+      </div>
+      <div class="product-meta">
+        <div>Wholesale Stock: <b>${formatNum(p.wholesaleStock)}</b></div>
+        <div>Retail Stock: <b>${formatNum(p.retailStock)}</b></div>
+        <div>Wholesale: <b>${formatMoney(p.wholesaleSelling)}</b></div>
+        <div>Retail: <b>${formatMoney(p.retailSelling)}</b></div>
+        <div>Unit: <b>${escapeHtml(p.retailUnit)}</b></div>
+        <div>Device: <b>${escapeHtml(p.deviceAssigned)}</b></div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function removeProduct(index){
+  products.splice(index,1);
+  renderProducts();
+  showStatus("Product removed.");
+}
+
+function formatNum(n){
+  return Number(n).toLocaleString("en-PH",{maximumFractionDigits:3});
+}
+function formatMoney(n){
+  return Number(n).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+}
+
+$("addBtn").addEventListener("click",()=>{
+  const p = getFormProduct();
+  const error = validateProduct(p);
+  if(error){ showStatus(error,"error"); return; }
+  products.push(p);
+  renderProducts();
+  clearForm();
+  showStatus("Product added to the Word file list.");
+});
+
+$("clearAllBtn").addEventListener("click",()=>{
+  if(!products.length){ clearForm(); return; }
+  if(confirm("Remove all products from the current list?")){
+    products.length=0;
+    renderProducts();
+    showStatus("All products cleared.");
+  }
+});
+
+$("doneBtn").addEventListener("click", async ()=>{
+  if(!products.length){
+    showStatus("Add at least one product before pressing Done.","error");
+    return;
+  }
+  try{
+    await createWordFile();
+    showStatus("Word file created successfully. It is ready to open in Microsoft Word.");
+  }catch(err){
+    console.error(err);
+    showStatus("Could not create the Word file. Check your internet connection and try again.","error");
+  }
+});
+
+/* =========================
+   BARCODE SCANNER
+========================= */
+$("scanBtn").addEventListener("click", openScanner);
+$("closeScanner").addEventListener("click", closeScanner);
+
+async function openScanner(){
+  /*
+    IMPORTANT:
+    file:// pages cannot be guaranteed camera access by every browser.
+    We therefore attempt the native camera only if the browser exposes it.
+    If blocked, the user can enter the barcode manually without needing HTTP.
+  */
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showStatus("Camera is blocked for this local HTML file. Type the barcode manually; no HTTP is required.","error");
+    $("barcode").focus();
+    return;
+  }
+
+  $("scannerModal").style.display="flex";
+  const video = $("scannerVideo");
+
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:"environment"}},
+      audio:false
+    });
+    video.srcObject = stream;
+
+    /*
+      Native BarcodeDetector, when available.
+      No external library or internet is needed.
+    */
+    if("BarcodeDetector" in window){
+      let detector;
+      try{
+        const formats = await BarcodeDetector.getSupportedFormats();
+        detector = new BarcodeDetector({formats});
+      }catch(e){
+        detector = new BarcodeDetector();
+      }
+
+      let active = true;
+
+      const detect = async () => {
+        if(!active || $("scannerModal").style.display==="none") return;
+        try{
+          const codes = await detector.detect(video);
+          if(codes && codes.length){
+            const value = codes[0].rawValue || "";
+            if(value){
+              $("barcode").value=value;
+              closeScanner();
+              showStatus("Barcode scanned: " + value);
+              $("productName").focus();
+              return;
+            }
+          }
+        }catch(e){}
+        requestAnimationFrame(detect);
+      };
+
+      requestAnimationFrame(detect);
+
+      scannerControls = {
+        stop(){
+          active=false;
+          if(video.srcObject){
+            video.srcObject.getTracks().forEach(t=>t.stop());
+            video.srcObject=null;
+          }
+        }
+      };
+    }else{
+      /*
+        Camera preview still opens, but this browser does not have a native
+        BarcodeDetector. The user can close it and type the barcode.
+      */
+      showStatus("Camera opened, but this browser has no built-in barcode detector. Type the barcode manually.","error");
+    }
+  }catch(err){
+    console.error(err);
+    closeScanner();
+    showStatus("Camera access was blocked for this local HTML file. Type the barcode manually; no HTTP is required.","error");
+    $("barcode").focus();
+  }
+}
+
+function closeScanner(){
+  try{
+    if(scannerControls && typeof scannerControls.stop === "function") scannerControls.stop();
+  }catch(e){}
+  scannerControls=null;
+  const video=$("scannerVideo");
+  if(video.srcObject){
+    video.srcObject.getTracks().forEach(t=>t.stop());
+    video.srcObject=null;
+  }
+  $("scannerModal").style.display="none";
+}
+
+/* =========================
+   WORD FILE GENERATION
+   Matches uploaded template:
+   Barcode | Product Name | Wholesale Stock | Wholesale Capital |
+   Wholesale Selling | Retail Stock | Retail Capital | Retail Selling |
+   Retail Unit | Device Assigned
+   ========================= */
+async function createWordFile(){
+  /*
+    OFFLINE MODE:
+    A Word-compatible .doc file is generated directly in the browser.
+    This works even when the HTML is opened using file://.
+  */
+  const headers = [
+    "Barcode","Product Name","Wholesale Stock","Wholesale Capital",
+    "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling",
+    "Retail Unit","Device Assigned"
+  ];
+
+  const esc = v => String(v)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;");
+
+  const rows = products.map(p => `
+    <tr>
+      <td>${esc(p.barcode)}</td>
+      <td>${esc(p.productName)}</td>
+      <td>${esc(formatDocNumber(p.wholesaleStock))}</td>
+      <td>${esc(formatDocMoney(p.wholesaleCapital))}</td>
+      <td>${esc(formatDocMoney(p.wholesaleSelling))}</td>
+      <td>${esc(formatDocNumber(p.retailStock))}</td>
+      <td>${esc(formatDocMoney(p.retailCapital))}</td>
+      <td>${esc(formatDocMoney(p.retailSelling))}</td>
+      <td>${esc(p.retailUnit)}</td>
+      <td>${esc(p.deviceAssigned)}</td>
+    </tr>`).join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>TG-POS Product Import Template</title>
+<style>
+@page { size: landscape; margin: 0.5in; }
+body { font-family: Arial, sans-serif; font-size: 10pt; }
+h1 { text-align:center; font-size:16pt; margin-bottom:8px; }
+p { font-size:10pt; }
+table { border-collapse:collapse; width:100%; }
+th,td { border:1px solid #777; padding:5px; vertical-align:middle; }
+th { background:#d9e2f3; text-align:center; font-weight:bold; }
+</style>
+</head>
+<body>
+<h1>POS Product Import Template – KG &amp; Piece</h1>
+<p>Use this template to import products into TG-POS. Keep the column headers exactly as shown.</p>
+<table>
+<thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
+<tbody>${rows}</tbody>
+</table>
+<p>
+Allowed values: Retail Unit = kg or piece.
+Device Assigned = Device 1, Device 1 || Device 2, or All Devices.
+KG products may use decimal stock such as 50.000 or 25.500.
+</p>
+</body>
+</html>`;
+
+  const blob = new Blob([html], {type:"application/msword"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0,19).replace(/[T:]/g,"-");
+  a.href = url;
+  a.download = `TG-POS_Product_Import_${stamp}.doc`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),3000);
+}
+
+function formatDocNumber(n){
+  return Number(n).toFixed(3).replace(/\.?0+$/,"");
+}
+function formatDocMoney(n){
+  return Number(n).toFixed(2);
+}
+
+window.removeProduct = removeProduct;
+renderProducts();
+</script>
+</body>
+</html>
