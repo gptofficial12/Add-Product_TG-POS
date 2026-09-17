@@ -435,50 +435,30 @@ function parseDocxXmlToRows(xmlText){
   const doc = new DOMParser().parseFromString(xmlText,"application/xml");
   if(doc.querySelector("parsererror")) return [];
 
-  const tables = Array.from(doc.getElementsByTagName("w:tbl"));
+  // Use localName instead of relying only on the "w:" prefix. Word files
+  // can use the same Word namespace with a different XML prefix.
+  const all = Array.from(doc.getElementsByTagName("*"));
+  const tables = all.filter(el => el.localName === "tbl");
   const rows = [];
 
-  /*
-    Read the first real table in the DOCX.  Word can split a cell's text
-    into several <w:t> nodes, or store line breaks/tabs between them.
-    We preserve those separators so values such as "Device 1 || Device 2"
-    and multi-word product names are reconstructed correctly.
-  */
   for(const table of tables){
-    const trs = Array.from(table.getElementsByTagName("w:tr"));
+    const trs = Array.from(table.getElementsByTagName("*"))
+      .filter(el => el.localName === "tr");
 
     for(const tr of trs){
-      const cells = Array.from(tr.getElementsByTagName("w:tc")).map(tc => {
-        let out = "";
-        const nodes = Array.from(tc.getElementsByTagName("w:t"));
+      const cells = Array.from(tr.getElementsByTagName("*"))
+        .filter(el => el.localName === "tc")
+        .map(tc => {
+          const textNodes = Array.from(tc.getElementsByTagName("*"))
+            .filter(el => el.localName === "t")
+            .map(el => el.textContent || "");
 
-        // Prefer paragraph-level content so separate runs remain separated.
-        const paragraphs = Array.from(tc.getElementsByTagName("w:p"));
-        if(paragraphs.length){
-          out = paragraphs.map(p => {
-            let text = "";
-            for(const node of Array.from(p.childNodes)){
-              const name = node.nodeName;
-              if(name === "w:r") {
-                for(const child of Array.from(node.childNodes)){
-                  if(child.nodeName === "w:t") text += child.textContent || "";
-                  else if(child.nodeName === "w:tab") text += "\t";
-                  else if(child.nodeName === "w:br" || child.nodeName === "w:cr") text += "\n";
-                }
-              }
-            }
-            return text;
-          }).join("\n");
-        } else {
-          out = nodes.map(t => t.textContent || "").join("");
-        }
-
-        return out
-          .replace(/\u00A0/g," ")
-          .replace(/\r?\n+/g," ")
-          .replace(/\s+/g," ")
-          .trim();
-      });
+          return textNodes.join("")
+            .replace(/\u00A0/g," ")
+            .replace(/\r?\n+/g," ")
+            .replace(/\s+/g," ")
+            .trim();
+        });
 
       if(cells.length) rows.push(cells);
     }
@@ -774,6 +754,14 @@ $("updateBtn").addEventListener("click",()=>{
 
 $("barcode").addEventListener("change", lookupBarcode);
 $("barcode").addEventListener("blur", lookupBarcode);
+
+// Also check while the barcode field is changed programmatically or typed.
+// This is especially useful after a scanner writes the value into the field.
+$("barcode").addEventListener("input", ()=>{
+  if(normalizeBarcode($("barcode").value).length >= 4){
+    lookupBarcode();
+  }
+});
 
 $("barcode").addEventListener("keydown", e=>{
   if(e.key === "Enter"){
