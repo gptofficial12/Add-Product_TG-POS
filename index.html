@@ -178,7 +178,7 @@ button{
   <section class="card" id="importCard">
     <h2>Import Existing Product File</h2>
     <div class="small-note" style="margin-bottom:10px">
-      Upload an existing TG-POS Word file (.doc or .docx) using the same column format.
+      Upload an existing TG-POS Word file (.docx) using the same 10-column format. The scanner will use Barcode as the exact lookup key.
       Existing products will be loaded for lookup and can be updated without creating duplicates.
     </div>
     <input id="importFile" type="file" accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
@@ -267,7 +267,7 @@ button{
   <section class="card">
     <h2>Finish</h2>
     <div class="small-note" style="margin-bottom:12px">
-      Tap Done when all products have been added. A Word-compatible (.doc) file will be created using the same column structure as the uploaded TG-POS import template. No HTTP server or internet connection is required.
+      Tap Done when all products have been added. A real Microsoft Word (.docx) file will be created using the same column structure as the TG-POS import template. No HTTP server or internet connection is required.
     </div>
     <div class="actions">
       <button type="button" class="clear-btn" id="clearAllBtn">Clear All</button>
@@ -393,15 +393,24 @@ function normalizeImportedRows(rows){
   const indexOf = name => header.indexOf(normalizeHeader(name));
 
   const idx = IMPORT_HEADERS.map(indexOf);
-  if(idx[0] < 0 || idx[1] < 0) return [];
+  // The new TG-POS .docx uses all 10 required columns.
+  if(idx.some(i => i < 0)) return [];
 
   const result = [];
+  const seen = new Set();
+
   for(let r=headerIndex+1;r<rows.length;r++){
     const row = rows[r];
-    const cells = IMPORT_HEADERS.map((_,i) => idx[i] >= 0 ? (row[idx[i]] ?? "") : "");
+    const cells = IMPORT_HEADERS.map((_,i) => row[idx[i]] ?? "");
     const p = productFromCells(cells);
-    if(p) result.push(p);
+    if(!p) continue;
+
+    const key = normalizeBarcode(p.barcode);
+    if(seen.has(key)) continue;
+    seen.add(key);
+    result.push(p);
   }
+
   return result;
 }
 
@@ -429,18 +438,54 @@ function parseDocxXmlToRows(xmlText){
   const tables = Array.from(doc.getElementsByTagName("w:tbl"));
   const rows = [];
 
+  /*
+    Read the first real table in the DOCX.  Word can split a cell's text
+    into several <w:t> nodes, or store line breaks/tabs between them.
+    We preserve those separators so values such as "Device 1 || Device 2"
+    and multi-word product names are reconstructed correctly.
+  */
   for(const table of tables){
     const trs = Array.from(table.getElementsByTagName("w:tr"));
+
     for(const tr of trs){
       const cells = Array.from(tr.getElementsByTagName("w:tc")).map(tc => {
-        return Array.from(tc.getElementsByTagName("w:t"))
-          .map(t => t.textContent || "")
-          .join("");
+        let out = "";
+        const nodes = Array.from(tc.getElementsByTagName("w:t"));
+
+        // Prefer paragraph-level content so separate runs remain separated.
+        const paragraphs = Array.from(tc.getElementsByTagName("w:p"));
+        if(paragraphs.length){
+          out = paragraphs.map(p => {
+            let text = "";
+            for(const node of Array.from(p.childNodes)){
+              const name = node.nodeName;
+              if(name === "w:r") {
+                for(const child of Array.from(node.childNodes)){
+                  if(child.nodeName === "w:t") text += child.textContent || "";
+                  else if(child.nodeName === "w:tab") text += "\t";
+                  else if(child.nodeName === "w:br" || child.nodeName === "w:cr") text += "\n";
+                }
+              }
+            }
+            return text;
+          }).join("\n");
+        } else {
+          out = nodes.map(t => t.textContent || "").join("");
+        }
+
+        return out
+          .replace(/\u00A0/g," ")
+          .replace(/\r?\n+/g," ")
+          .replace(/\s+/g," ")
+          .trim();
       });
+
       if(cells.length) rows.push(cells);
     }
+
     if(rows.length) break;
   }
+
   return rows;
 }
 
@@ -534,7 +579,7 @@ async function parseImportedWordFile(file){
     return parseWordHtmlToRows(text);
   }
 
-  throw new Error("Please select a .doc or .docx Word file.");
+  throw new Error("Please select a .docx Word file (the new TG-POS format).");
 }
 
 function setExistingMode(product){
@@ -805,10 +850,10 @@ $("doneBtn").addEventListener("click", async ()=>{
   }
   try{
     await createWordFile();
-    showStatus("Word file created successfully. It is ready to open in Microsoft Word.");
+    showStatus("Word .docx file created successfully. It is ready to open in Microsoft Word.");
   }catch(err){
     console.error(err);
-    showStatus("Could not create the Word file. Check your internet connection and try again.","error");
+    showStatus("Could not create the Word .docx file. Please try again.","error");
   }
 });
 
@@ -1037,8 +1082,16 @@ function acceptBarcode(value){
 
   $("barcode").value = v;
   closeScanner();
-  showStatus("Barcode scanned: " + v);
-  $("productName").focus();
+
+  // The scanner changes the input value through JavaScript, so the normal
+  // change/blur events are not triggered. Explicitly search the imported
+  // product list now so an existing product is filled immediately.
+  const existing = lookupBarcode();
+
+  if(!existing){
+    showStatus("Barcode scanned: " + v);
+    $("productName").focus();
+  }
   return true;
 }
 
@@ -1237,71 +1290,195 @@ function closeScanner(){
 async function createWordFile(){
   /*
     OFFLINE MODE:
-    A Word-compatible .doc file is generated directly in the browser.
-    This works even when the HTML is opened using file://.
+    Create a REAL Microsoft Word .docx file directly in the browser.
+    No external library, HTTP server, or internet connection is required.
   */
+
   const headers = [
     "Barcode","Product Name","Wholesale Stock","Wholesale Capital",
     "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling",
     "Retail Unit","Device Assigned"
   ];
 
-  const esc = v => String(v)
+  const escXml = v => String(v ?? "")
     .replace(/&/g,"&amp;")
     .replace(/</g,"&lt;")
     .replace(/>/g,"&gt;")
-    .replace(/"/g,"&quot;");
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&apos;");
 
-  const rows = products.map(p => `
-    <tr>
-      <td>${esc(p.barcode)}</td>
-      <td>${esc(p.productName)}</td>
-      <td>${esc(formatDocNumber(p.wholesaleStock))}</td>
-      <td>${esc(formatDocMoney(p.wholesaleCapital))}</td>
-      <td>${esc(formatDocMoney(p.wholesaleSelling))}</td>
-      <td>${esc(formatDocNumber(p.retailStock))}</td>
-      <td>${esc(formatDocMoney(p.retailCapital))}</td>
-      <td>${esc(formatDocMoney(p.retailSelling))}</td>
-      <td>${esc(p.retailUnit)}</td>
-      <td>${esc(p.deviceAssigned)}</td>
-    </tr>`).join("");
+  const cell = value =>
+    `<w:tc><w:tcPr><w:tcW w:w="1400" w:type="dxa"/></w:tcPr>` +
+    `<w:p><w:r><w:t xml:space="preserve">${escXml(value)}</w:t></w:r></w:p></w:tc>`;
 
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>TG-POS Product Import Template</title>
-<style>
-@page { size: landscape; margin: 0.5in; }
-body { font-family: Arial, sans-serif; font-size: 10pt; }
-h1 { text-align:center; font-size:16pt; margin-bottom:8px; }
-p { font-size:10pt; }
-table { border-collapse:collapse; width:100%; }
-th,td { border:1px solid #777; padding:5px; vertical-align:middle; }
-th { background:#d9e2f3; text-align:center; font-weight:bold; }
-</style>
-</head>
-<body>
-<h1>POS Product Import Template – KG &amp; Piece</h1>
-<p>Use this template to import products into TG-POS. Keep the column headers exactly as shown.</p>
-<table>
-<thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join("")}</tr></thead>
-<tbody>${rows}</tbody>
-</table>
-<p>
-Allowed values: Retail Unit = kg or piece.
-Device Assigned = Device 1, Device 1 || Device 2, or All Devices.
-KG products may use decimal stock such as 50.000 or 25.500.
-</p>
-</body>
-</html>`;
+  const headerCell = value =>
+    `<w:tc><w:tcPr><w:shd w:fill="D9E2F3"/><w:tcW w:w="1400" w:type="dxa"/></w:tcPr>` +
+    `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/></w:rPr>` +
+    `<w:t xml:space="preserve">${escXml(value)}</w:t></w:r></w:p></w:tc>`;
 
-  const blob = new Blob([html], {type:"application/msword"});
+  const rowsXml = products.map(p =>
+    `<w:tr>` +
+      cell(p.barcode) +
+      cell(p.productName) +
+      cell(formatDocNumber(p.wholesaleStock)) +
+      cell(formatDocMoney(p.wholesaleCapital)) +
+      cell(formatDocMoney(p.wholesaleSelling)) +
+      cell(formatDocNumber(p.retailStock)) +
+      cell(formatDocMoney(p.retailCapital)) +
+      cell(formatDocMoney(p.retailSelling)) +
+      cell(p.retailUnit) +
+      cell(p.deviceAssigned) +
+    `</w:tr>`
+  ).join("");
+
+  const tableXml =
+    `<w:tbl>` +
+      `<w:tblPr>` +
+        `<w:tblBorders>` +
+          `<w:top w:val="single" w:sz="4" w:color="777777"/>` +
+          `<w:left w:val="single" w:sz="4" w:color="777777"/>` +
+          `<w:bottom w:val="single" w:sz="4" w:color="777777"/>` +
+          `<w:right w:val="single" w:sz="4" w:color="777777"/>` +
+          `<w:insideH w:val="single" w:sz="4" w:color="777777"/>` +
+          `<w:insideV w:val="single" w:sz="4" w:color="777777"/>` +
+        `</w:tblBorders>` +
+        `<w:tblLayout w:type="fixed"/>` +
+      `</w:tblPr>` +
+      `<w:tblGrid>${headers.map(()=>`<w:gridCol w:w="1400"/>`).join("")}</w:tblGrid>` +
+      `<w:tr>${headers.map(headerCell).join("")}</w:tr>` +
+      rowsXml +
+    `</w:tbl>`;
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:jc w:val="center"/></w:pPr>
+      <w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr>
+      <w:t>POS Product Import Template – KG &amp; Piece</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>Use this template to import products into TG-POS. Keep the column headers exactly as shown.</w:t></w:r>
+    </w:p>
+    ${tableXml}
+    <w:p><w:r><w:t>Allowed values: Retail Unit = kg or piece.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Device Assigned = Device 1, Device 1 || Device 2, or All Devices.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>KG products may use decimal stock such as 50.000 or 25.500.</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>
+      <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr></w:rPrDefault>
+  </w:docDefaults>
+</w:styles>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  const documentRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  // Minimal ZIP writer: uses STORE (no compression), which is valid for .docx
+  // and keeps this page fully offline.
+  function crc32(bytes){
+    let table = crc32.table;
+    if(!table){
+      table = crc32.table = new Uint32Array(256);
+      for(let n=0;n<256;n++){
+        let c=n;
+        for(let k=0;k<8;k++) c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);
+        table[n]=c>>>0;
+      }
+    }
+    let c=0xFFFFFFFF;
+    for(const b of bytes) c=table[(c^b)&255]^(c>>>8);
+    return (c^0xFFFFFFFF)>>>0;
+  }
+
+  const encoder = new TextEncoder();
+  const entries = [
+    ["[Content_Types].xml", contentTypesXml],
+    ["_rels/.rels", relsXml],
+    ["word/document.xml", documentXml],
+    ["word/_rels/document.xml.rels", documentRelsXml],
+    ["word/styles.xml", stylesXml]
+  ];
+
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+
+  const u16 = n => new Uint8Array([n&255,(n>>>8)&255]);
+  const u32 = n => new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]);
+  const concat = arrays => {
+    const total = arrays.reduce((s,a)=>s+a.length,0);
+    const result = new Uint8Array(total);
+    let pos=0;
+    for(const a of arrays){ result.set(a,pos); pos+=a.length; }
+    return result;
+  };
+
+  for(const [name, value] of entries){
+    const nameBytes = encoder.encode(name);
+    const data = encoder.encode(value);
+    const crc = crc32(data);
+    const local = concat([
+      u32(0x04034b50), u16(20), u16(0), u16(0),
+      u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length),
+      u16(nameBytes.length), u16(0),
+      nameBytes, data
+    ]);
+    chunks.push(local);
+
+    central.push(concat([
+      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0),
+      u16(0), u16(0),
+      u32(crc), u32(data.length), u32(data.length),
+      u16(nameBytes.length), u16(0), u16(0), u16(0), u16(0),
+      u32(0), u32(offset), nameBytes
+    ]));
+
+    offset += local.length;
+  }
+
+  const centralData = concat(central);
+  const localData = concat(chunks);
+  const end = concat([
+    u32(0x06054b50), u16(0), u16(0),
+    u16(entries.length), u16(entries.length),
+    u32(centralData.length), u32(localData.length),
+    u16(0)
+  ]);
+
+  const zipBytes = concat([localData, centralData, end]);
+  const blob = new Blob([zipBytes], {
+    type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  });
+
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const stamp = new Date().toISOString().slice(0,19).replace(/[T:]/g,"-");
   a.href = url;
-  a.download = `TG-POS_Product_Import_${stamp}.doc`;
+  a.download = `TG-POS_Product_Import_${stamp}.docx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
