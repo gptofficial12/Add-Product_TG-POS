@@ -259,7 +259,18 @@ button{
       <video id="scannerVideo" autoplay muted playsinline></video>
       <div class="scan-line"></div>
     </div>
-    <div class="scanner-tip">Center the barcode inside the camera view. The scanner will fill the Barcode field automatically.</div>
+    <div class="scanner-tip">
+       <b>For accurate scanning:</b> keep the barcode inside the frame, hold the phone steady,
+       use good lighting, and avoid glare. The scanner confirms the same barcode several times
+       before accepting it.
+     </div>
+     <div class="scanner-controls">
+       <button type="button" id="torchBtn" class="scanner-control-btn" style="display:none">🔦 Light</button>
+       <button type="button" id="zoomOutBtn" class="scanner-control-btn" style="display:none">−</button>
+       <span id="zoomLabel" style="display:none">1×</span>
+       <button type="button" id="zoomInBtn" class="scanner-control-btn" style="display:none">＋</button>
+     </div>
+     <div id="scannerStatus" class="scanner-status">Starting camera…</div>
   </div>
 </div>
 
@@ -396,104 +407,418 @@ $("doneBtn").addEventListener("click", async ()=>{
 });
 
 /* =========================
-   BARCODE SCANNER
-========================= */
+   ACCURATE BARCODE SCANNER
+   =========================
+   Design goals:
+   - Prefer rear camera at high resolution.
+   - Ask for continuous autofocus when supported.
+   - Use the browser's native BarcodeDetector when available.
+   - Restrict detection to common retail 1-D barcode formats.
+   - Require repeated identical reads before accepting a value.
+   - Ignore obviously short/noisy results.
+   - Optional torch and optical/digital zoom controls when the camera exposes them.
+   - Fully stops the camera when the modal closes.
+*/
 $("scanBtn").addEventListener("click", openScanner);
 $("closeScanner").addEventListener("click", closeScanner);
+$("torchBtn").addEventListener("click", toggleTorch);
+$("zoomInBtn").addEventListener("click", () => changeZoom(1));
+$("zoomOutBtn").addEventListener("click", () => changeZoom(-1));
+
+let scannerState = {
+  stream: null,
+  track: null,
+  detector: null,
+  running: false,
+  raf: 0,
+  lastValue: "",
+  stableCount: 0,
+  lastReadAt: 0,
+  torch: false,
+  zoom: 1,
+  zoomMin: 1,
+  zoomMax: 1,
+  zoomStep: 0.1,
+  formats: []
+};
+
+const RETAIL_BARCODE_FORMATS = [
+  "ean_13",
+  "ean_8",
+  "upc_a",
+  "upc_e",
+  "code_128",
+  "code_39",
+  "code_93",
+  "itf",
+  "codabar",
+  "data_matrix"
+];
+
+function setScannerStatus(message, good=false){
+  const el = $("scannerStatus");
+  if(!el) return;
+  el.textContent = message;
+  el.style.color = good ? "#8df0b4" : "#ddd";
+}
+
+function sleep(ms){
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function getBestCameraStream(){
+  /*
+    Start with a high-resolution rear-camera request. Some phones reject
+    exact constraints, so we progressively fall back.
+  */
+  const attempts = [
+    {
+      audio:false,
+      video:{
+        facingMode:{exact:"environment"},
+        width:{ideal:1920},
+        height:{ideal:1080},
+        frameRate:{ideal:30, min:15},
+        focusMode:{ideal:"continuous"}
+      }
+    },
+    {
+      audio:false,
+      video:{
+        facingMode:{ideal:"environment"},
+        width:{ideal:1280},
+        height:{ideal:720},
+        frameRate:{ideal:30}
+      }
+    },
+    {
+      audio:false,
+      video:{facingMode:"environment"}
+    }
+  ];
+
+  let lastError = null;
+  for(const constraints of attempts){
+    try{
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    }catch(err){
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Camera unavailable.");
+}
+
+async function applyCameraEnhancements(track){
+  if(!track || !track.applyConstraints) return;
+
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const advanced = {};
+
+  // Continuous autofocus is supported by some mobile Chromium cameras.
+  if(Array.isArray(caps.focusMode) && caps.focusMode.includes("continuous")){
+    advanced.focusMode = "continuous";
+  }
+
+  // Prefer a useful zoom range without forcing an unsupported value.
+  if(caps.zoom && Number.isFinite(caps.zoom.min) && Number.isFinite(caps.zoom.max)){
+    scannerState.zoomMin = caps.zoom.min;
+    scannerState.zoomMax = caps.zoom.max;
+    scannerState.zoomStep = Number.isFinite(caps.zoom.step) && caps.zoom.step > 0
+      ? caps.zoom.step : 0.1;
+
+    scannerState.zoom = Math.max(
+      scannerState.zoomMin,
+      Math.min(1, scannerState.zoomMax)
+    );
+
+    if(scannerState.zoom < scannerState.zoomMin){
+      scannerState.zoom = scannerState.zoomMin;
+    }
+
+    if(scannerState.zoomMax > scannerState.zoomMin){
+      $("zoomInBtn").style.display = "";
+      $("zoomOutBtn").style.display = "";
+      $("zoomLabel").style.display = "";
+      updateZoomLabel();
+      advanced.zoom = scannerState.zoom;
+    }
+  }
+
+  // Torch is only shown when the camera says it supports it.
+  if(caps.torch === true){
+    $("torchBtn").style.display = "";
+  }
+
+  if(Object.keys(advanced).length){
+    try{
+      await track.applyConstraints({advanced:[advanced]});
+    }catch(e){
+      // Enhancement failure should not stop scanning.
+    }
+  }
+}
+
+function updateZoomLabel(){
+  const z = Number(scannerState.zoom || 1);
+  $("zoomLabel").textContent = z.toFixed(1).replace(".0","") + "×";
+}
+
+async function changeZoom(direction){
+  const track = scannerState.track;
+  if(!track || !track.getCapabilities || !track.applyConstraints) return;
+
+  const caps = track.getCapabilities();
+  if(!caps.zoom) return;
+
+  const step = Number(caps.zoom.step) > 0 ? Number(caps.zoom.step) : 0.1;
+  const min = Number(caps.zoom.min);
+  const max = Number(caps.zoom.max);
+
+  let next = scannerState.zoom + (direction * step);
+  next = Math.max(min, Math.min(max, next));
+  next = Math.round(next / step) * step;
+
+  try{
+    await track.applyConstraints({advanced:[{zoom:next}]});
+    scannerState.zoom = next;
+    updateZoomLabel();
+  }catch(e){}
+}
+
+async function toggleTorch(){
+  const track = scannerState.track;
+  if(!track || !track.getCapabilities) return;
+
+  const caps = track.getCapabilities();
+  if(caps.torch !== true) return;
+
+  scannerState.torch = !scannerState.torch;
+  try{
+    await track.applyConstraints({advanced:[{torch:scannerState.torch}]});
+    $("torchBtn").textContent = scannerState.torch ? "🔦 Light ON" : "🔦 Light";
+  }catch(e){
+    scannerState.torch = !scannerState.torch;
+  }
+}
+
+function getDetectorFormats(){
+  if(!("BarcodeDetector" in window)) return [];
+
+  try{
+    const supported = BarcodeDetector.getSupportedFormats
+      ? null
+      : null;
+  }catch(e){}
+
+  return RETAIL_BARCODE_FORMATS;
+}
+
+function barcodeLooksValid(value){
+  const v = String(value || "").trim();
+
+  // Retail barcodes are normally digits; Code 39/128 may be alphanumeric.
+  // Keep the scanner broad, but reject tiny/noisy camera detections.
+  if(v.length < 4 || v.length > 64) return false;
+  if(!/^[\x20-\x7E]+$/.test(v)) return false;
+  if(!/[A-Za-z0-9]/.test(v)) return false;
+
+  return true;
+}
+
+function acceptBarcode(value){
+  const v = String(value || "").trim();
+  if(!barcodeLooksValid(v)) return false;
+
+  $("barcode").value = v;
+  closeScanner();
+  showStatus("Barcode scanned: " + v);
+  $("productName").focus();
+  return true;
+}
+
+async function detectBarcodeLoop(){
+  if(!scannerState.running || !scannerState.detector) return;
+
+  const video = $("scannerVideo");
+
+  // Don't ask the detector to process frames before the video is usable.
+  if(video.readyState < 2 || video.videoWidth < 320){
+    scannerState.raf = requestAnimationFrame(detectBarcodeLoop);
+    return;
+  }
+
+  try{
+    const codes = await scannerState.detector.detect(video);
+
+    if(codes && codes.length){
+      /*
+        If several codes are visible, choose the longest non-empty value.
+        This reduces accidental selection of a small secondary symbol.
+      */
+      const candidates = codes
+        .map(c => String(c.rawValue || "").trim())
+        .filter(barcodeLooksValid)
+        .sort((a,b) => b.length - a.length);
+
+      if(candidates.length){
+        const value = candidates[0];
+        const now = performance.now();
+
+        if(value === scannerState.lastValue && now - scannerState.lastReadAt < 1200){
+          scannerState.stableCount++;
+        }else{
+          scannerState.lastValue = value;
+          scannerState.stableCount = 1;
+        }
+
+        scannerState.lastReadAt = now;
+
+        setScannerStatus(
+          "Reading… " + scannerState.stableCount + "/3 — hold steady",
+          false
+        );
+
+        // Three matching reads greatly reduce false positives.
+        if(scannerState.stableCount >= 3){
+          acceptBarcode(value);
+          return;
+        }
+      }
+    }
+  }catch(e){
+    // Detection errors on an individual frame are ignored.
+  }
+
+  scannerState.raf = requestAnimationFrame(detectBarcodeLoop);
+}
 
 async function openScanner(){
-  /*
-    IMPORTANT:
-    file:// pages cannot be guaranteed camera access by every browser.
-    We therefore attempt the native camera only if the browser exposes it.
-    If blocked, the user can enter the barcode manually without needing HTTP.
-  */
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-    showStatus("Camera is blocked for this local HTML file. Type the barcode manually; no HTTP is required.","error");
+    showStatus(
+      "This browser cannot access the camera from this page. A hardware barcode scanner or manual entry can still be used.",
+      "error"
+    );
     $("barcode").focus();
     return;
   }
 
-  $("scannerModal").style.display="flex";
-  const video = $("scannerVideo");
+  if(!("BarcodeDetector" in window)){
+    showStatus(
+      "This browser does not provide a native barcode detector. Use a supported Chromium browser or a hardware barcode scanner.",
+      "error"
+    );
+    $("barcode").focus();
+    return;
+  }
+
+  $("scannerModal").style.display = "flex";
+  setScannerStatus("Starting high-resolution rear camera…");
 
   try{
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video:{facingMode:{ideal:"environment"}},
-      audio:false
-    });
-    video.srcObject = stream;
+    scannerState.stream = await getBestCameraStream();
+    scannerState.track = scannerState.stream.getVideoTracks()[0];
+
+    const video = $("scannerVideo");
+    video.srcObject = scannerState.stream;
+
+    await video.play();
+    await applyCameraEnhancements(scannerState.track);
 
     /*
-      Native BarcodeDetector, when available.
-      No external library or internet is needed.
+      Ask the browser which formats it actually supports, then use only
+      common retail formats from that supported set.
     */
-    if("BarcodeDetector" in window){
-      let detector;
-      try{
-        const formats = await BarcodeDetector.getSupportedFormats();
-        detector = new BarcodeDetector({formats});
-      }catch(e){
-        detector = new BarcodeDetector();
-      }
+    let supported = [];
+    try{
+      supported = await BarcodeDetector.getSupportedFormats();
+    }catch(e){}
 
-      let active = true;
+    const formats = supported.length
+      ? RETAIL_BARCODE_FORMATS.filter(f => supported.includes(f))
+      : RETAIL_BARCODE_FORMATS;
 
-      const detect = async () => {
-        if(!active || $("scannerModal").style.display==="none") return;
-        try{
-          const codes = await detector.detect(video);
-          if(codes && codes.length){
-            const value = codes[0].rawValue || "";
-            if(value){
-              $("barcode").value=value;
-              closeScanner();
-              showStatus("Barcode scanned: " + value);
-              $("productName").focus();
-              return;
-            }
-          }
-        }catch(e){}
-        requestAnimationFrame(detect);
-      };
+    scannerState.formats = formats;
 
-      requestAnimationFrame(detect);
-
-      scannerControls = {
-        stop(){
-          active=false;
-          if(video.srcObject){
-            video.srcObject.getTracks().forEach(t=>t.stop());
-            video.srcObject=null;
-          }
-        }
-      };
-    }else{
-      /*
-        Camera preview still opens, but this browser does not have a native
-        BarcodeDetector. The user can close it and type the barcode.
-      */
-      showStatus("Camera opened, but this browser has no built-in barcode detector. Type the barcode manually.","error");
+    try{
+      scannerState.detector = formats.length
+        ? new BarcodeDetector({formats})
+        : new BarcodeDetector();
+    }catch(e){
+      scannerState.detector = new BarcodeDetector();
     }
+
+    scannerState.running = true;
+    scannerState.lastValue = "";
+    scannerState.stableCount = 0;
+    scannerState.lastReadAt = 0;
+
+    setScannerStatus(
+      "Ready — place ONE barcode inside the frame and hold steady.",
+      true
+    );
+
+    scannerState.raf = requestAnimationFrame(detectBarcodeLoop);
+
   }catch(err){
     console.error(err);
     closeScanner();
-    showStatus("Camera access was blocked for this local HTML file. Type the barcode manually; no HTTP is required.","error");
+
+    let msg = "Could not start the camera.";
+    if(err && err.name === "NotAllowedError"){
+      msg = "Camera permission was denied. Allow camera access for this browser.";
+    }else if(err && err.name === "NotFoundError"){
+      msg = "No camera was found on this device.";
+    }else if(err && err.name === "NotReadableError"){
+      msg = "The camera is already being used by another app.";
+    }else if(err && err.name === "SecurityError"){
+      msg = "The browser blocked camera access for this local page.";
+    }
+
+    showStatus(msg, "error");
     $("barcode").focus();
   }
 }
 
 function closeScanner(){
-  try{
-    if(scannerControls && typeof scannerControls.stop === "function") scannerControls.stop();
-  }catch(e){}
-  scannerControls=null;
-  const video=$("scannerVideo");
-  if(video.srcObject){
-    video.srcObject.getTracks().forEach(t=>t.stop());
-    video.srcObject=null;
+  scannerState.running = false;
+
+  if(scannerState.raf){
+    cancelAnimationFrame(scannerState.raf);
+    scannerState.raf = 0;
   }
-  $("scannerModal").style.display="none";
+
+  try{
+    if(scannerState.track){
+      scannerState.track.applyConstraints({
+        advanced:[{torch:false}]
+      }).catch(()=>{});
+    }
+  }catch(e){}
+
+  if(scannerState.stream){
+    scannerState.stream.getTracks().forEach(track => track.stop());
+  }
+
+  scannerState.stream = null;
+  scannerState.track = null;
+  scannerState.detector = null;
+  scannerState.lastValue = "";
+  scannerState.stableCount = 0;
+  scannerState.torch = false;
+  scannerState.zoom = 1;
+
+  const video = $("scannerVideo");
+  if(video){
+    video.pause();
+    video.srcObject = null;
+  }
+
+  $("torchBtn").style.display = "none";
+  $("zoomInBtn").style.display = "none";
+  $("zoomOutBtn").style.display = "none";
+  $("zoomLabel").style.display = "none";
+  $("torchBtn").textContent = "🔦 Light";
+  $("scannerModal").style.display = "none";
 }
 
 /* =========================
