@@ -315,6 +315,26 @@ const IMPORT_HEADERS = [
   "Retail Unit","Device Assigned"
 ];
 
+function num(id){
+  const v = parseFloat($(id).value);
+  return Number.isFinite(v) ? v : 0;
+}
+
+function getFormProduct(){
+  return {
+    barcode: $("barcode").value.trim(),
+    productName: $("productName").value.trim(),
+    wholesaleStock: num("wholesaleStock"),
+    wholesaleCapital: num("wholesaleCapital"),
+    wholesaleSelling: num("wholesaleSelling"),
+    retailStock: num("retailStock"),
+    retailCapital: num("retailCapital"),
+    retailSelling: num("retailSelling"),
+    retailUnit: $("retailUnit").value,
+    deviceAssigned: $("deviceAssigned").value
+  };
+}
+
 function normalizeHeader(s){
   return String(s || "")
     .replace(/\uFEFF/g,"")
@@ -589,7 +609,9 @@ function lookupBarcode(){
 function validateProduct(p){
   if(!p.barcode) return "Barcode is required.";
   if(!p.productName) return "Product Name is required.";
-  if(products.some(x => x.barcode === p.barcode)) return "That barcode is already in the list.";
+  if(products.some(x => normalizeBarcode(x.barcode) === normalizeBarcode(p.barcode))) {
+    return "That barcode is already in the list.";
+  }
   return "";
 }
 
