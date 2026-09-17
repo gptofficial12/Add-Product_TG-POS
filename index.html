@@ -94,6 +94,16 @@ button{
 }
 .scan-btn{background:var(--orange);color:#fff;white-space:nowrap}
 .add-btn{background:var(--green);color:#fff;width:100%;margin-top:14px;font-size:16px}
+.update-btn{background:var(--orange);color:#fff;width:100%;margin-top:8px;font-size:16px}
+.existing-notice{
+  margin-top:9px;padding:10px 12px;border-radius:10px;
+  background:#fff5e8;border:1px solid #f0c27a;color:#8a4b00;
+  font-size:12px;font-weight:700;
+}
+.import-loaded{
+  margin-top:8px;padding:9px 11px;border-radius:9px;
+  background:#e8f7ef;color:#12643a;font-weight:700;
+}
 .done-btn{background:var(--navy);color:#fff;width:100%;font-size:16px}
 .clear-btn{background:#eef1f4;color:#34404c}
 .small-note{font-size:11px;color:var(--muted);margin-top:5px}
@@ -165,6 +175,19 @@ button{
   <div class="card" style="border-left:5px solid var(--green)"><b>OFFLINE MODE</b><div class="small-note">This page can be opened directly from your phone/tablet as an HTML file. Product list and Word export do not require a web server.</div></div>
   <div id="status" class="status"></div>
 
+  <section class="card" id="importCard">
+    <h2>Import Existing Product File</h2>
+    <div class="small-note" style="margin-bottom:10px">
+      Upload an existing TG-POS Word file (.doc or .docx) using the same column format.
+      Existing products will be loaded for lookup and can be updated without creating duplicates.
+    </div>
+    <input id="importFile" type="file" accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+    <div id="importInfo" class="small-note">No existing product file loaded.</div>
+    <button type="button" class="clear-btn" id="clearImportBtn" style="margin-top:9px;display:none;width:100%">
+      Clear Imported File
+    </button>
+  </section>
+
   <section class="card">
     <h2>Add Product</h2>
 
@@ -227,7 +250,11 @@ button{
       </div>
     </div>
 
-    <button type="button" class="add-btn" id="addBtn">＋ Add Product</button>
+    <div id="productActionArea">
+      <button type="button" class="add-btn" id="addBtn">＋ Add Product</button>
+      <button type="button" class="update-btn" id="updateBtn" style="display:none">↻ Update Existing Product</button>
+    </div>
+    <div id="existingProductNotice" class="existing-notice" style="display:none"></div>
   </section>
 
   <section class="card">
@@ -276,37 +303,288 @@ button{
 
 <script>
 const products = [];
+let importedProducts = [];
+let editingBarcode = "";
 let scannerControls = null;
 
 const $ = id => document.getElementById(id);
 
-function showStatus(message, type="success"){
-  const el = $("status");
-  el.textContent = message;
-  el.className = "status " + type;
-  clearTimeout(showStatus.timer);
-  showStatus.timer = setTimeout(()=>{ el.className="status"; }, 3500);
+const IMPORT_HEADERS = [
+  "Barcode","Product Name","Wholesale Stock","Wholesale Capital",
+  "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling",
+  "Retail Unit","Device Assigned"
+];
+
+function normalizeHeader(s){
+  return String(s || "")
+    .replace(/\uFEFF/g,"")
+    .replace(/\s+/g," ")
+    .trim()
+    .toLowerCase();
 }
 
-function num(id){
-  const v = parseFloat($(id).value);
-  return Number.isFinite(v) ? v : 0;
+function normalizeBarcode(s){
+  return String(s ?? "").trim();
 }
 
-function getFormProduct(){
+function productFromCells(cells){
+  const c = cells.map(v => String(v ?? "").trim());
+  if(c.length < 10) return null;
+
+  const barcode = normalizeBarcode(c[0]);
+  const productName = c[1];
+  if(!barcode || !productName) return null;
+
+  const toNum = v => {
+    const n = parseFloat(String(v).replace(/,/g,""));
+    return Number.isFinite(n) ? n : 0;
+  };
+
   return {
-    barcode: $("barcode").value.trim(),
-    productName: $("productName").value.trim(),
-    wholesaleStock: num("wholesaleStock"),
-    wholesaleCapital: num("wholesaleCapital"),
-    wholesaleSelling: num("wholesaleSelling"),
-    retailStock: num("retailStock"),
-    retailCapital: num("retailCapital"),
-    retailSelling: num("retailSelling"),
-    retailUnit: $("retailUnit").value,
-    deviceAssigned: $("deviceAssigned").value
+    barcode,
+    productName,
+    wholesaleStock: toNum(c[2]),
+    wholesaleCapital: toNum(c[3]),
+    wholesaleSelling: toNum(c[4]),
+    retailStock: toNum(c[5]),
+    retailCapital: toNum(c[6]),
+    retailSelling: toNum(c[7]),
+    retailUnit: c[8] || "kg",
+    deviceAssigned: c[9] || "Device 1"
   };
 }
+
+function normalizeImportedRows(rows){
+  if(!rows.length) return [];
+
+  // Find the header row even if the Word document has a title above it.
+  let headerIndex = -1;
+  for(let i=0;i<Math.min(rows.length,20);i++){
+    const normalized = rows[i].map(normalizeHeader);
+    if(normalized.includes("barcode") && normalized.includes("product name")){
+      headerIndex = i;
+      break;
+    }
+  }
+
+  if(headerIndex < 0) return [];
+
+  const header = rows[headerIndex].map(normalizeHeader);
+  const indexOf = name => header.indexOf(normalizeHeader(name));
+
+  const idx = IMPORT_HEADERS.map(indexOf);
+  if(idx[0] < 0 || idx[1] < 0) return [];
+
+  const result = [];
+  for(let r=headerIndex+1;r<rows.length;r++){
+    const row = rows[r];
+    const cells = IMPORT_HEADERS.map((_,i) => idx[i] >= 0 ? (row[idx[i]] ?? "") : "");
+    const p = productFromCells(cells);
+    if(p) result.push(p);
+  }
+  return result;
+}
+
+function parseWordHtmlToRows(text){
+  const doc = new DOMParser().parseFromString(text,"text/html");
+  const rows = [];
+  doc.querySelectorAll("tr").forEach(tr => {
+    rows.push(Array.from(tr.querySelectorAll("th,td")).map(td => td.textContent.trim()));
+  });
+  return rows;
+}
+
+function decodeXmlText(xmlText){
+  const doc = new DOMParser().parseFromString(xmlText,"application/xml");
+  if(doc.querySelector("parsererror")) return "";
+  return Array.from(doc.getElementsByTagName("w:t"))
+    .map(n => n.textContent || "")
+    .join(" ");
+}
+
+function parseDocxXmlToRows(xmlText){
+  const doc = new DOMParser().parseFromString(xmlText,"application/xml");
+  if(doc.querySelector("parsererror")) return [];
+
+  const tables = Array.from(doc.getElementsByTagName("w:tbl"));
+  const rows = [];
+
+  for(const table of tables){
+    const trs = Array.from(table.getElementsByTagName("w:tr"));
+    for(const tr of trs){
+      const cells = Array.from(tr.getElementsByTagName("w:tc")).map(tc => {
+        return Array.from(tc.getElementsByTagName("w:t"))
+          .map(t => t.textContent || "")
+          .join("");
+      });
+      if(cells.length) rows.push(cells);
+    }
+    if(rows.length) break;
+  }
+  return rows;
+}
+
+/*
+  Minimal ZIP reader for .docx using browser APIs only.
+  DOCX is a ZIP container. We read the central directory, then inflate
+  compressed entries with DecompressionStream("deflate-raw").
+*/
+function u16(view, p){
+  return view.getUint16(p, true);
+}
+function u32(view, p){
+  return view.getUint32(p, true);
+}
+
+async function readDocxEntry(arrayBuffer, wantedName){
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+
+  // Find End Of Central Directory signature from the end.
+  let eocd = -1;
+  const min = Math.max(0, bytes.length - 65557);
+  for(let p=bytes.length-22;p>=min;p--){
+    if(u32(view,p) === 0x06054b50){
+      eocd = p;
+      break;
+    }
+  }
+  if(eocd < 0) throw new Error("Invalid DOCX ZIP container.");
+
+  const cdSize = u32(view,eocd+12);
+  const cdOffset = u32(view,eocd+16);
+  let p = cdOffset;
+  const target = wantedName.replace(/\\/g,"/");
+
+  while(p < cdOffset + cdSize){
+    if(u32(view,p) !== 0x02014b50) break;
+
+    const compression = u16(view,p+10);
+    const compressedSize = u32(view,p+20);
+    const nameLen = u16(view,p+28);
+    const extraLen = u16(view,p+30);
+    const commentLen = u16(view,p+32);
+    const localOffset = u32(view,p+42);
+
+    const nameBytes = bytes.slice(p+46,p+46+nameLen);
+    const name = new TextDecoder("utf-8").decode(nameBytes);
+
+    if(name === target){
+      const lp = localOffset;
+      if(u32(view,lp) !== 0x04034b50) throw new Error("Invalid DOCX local header.");
+
+      const localNameLen = u16(view,lp+26);
+      const localExtraLen = u16(view,lp+28);
+      const dataStart = lp + 30 + localNameLen + localExtraLen;
+      const data = bytes.slice(dataStart,dataStart+compressedSize);
+
+      if(compression === 0){
+        return new TextDecoder("utf-8").decode(data);
+      }
+      if(compression === 8){
+        if(!("DecompressionStream" in window)){
+          throw new Error("This browser cannot decompress DOCX files offline.");
+        }
+        const stream = new Blob([data]).stream().pipeThrough(
+          new DecompressionStream("deflate-raw")
+        );
+        const decompressed = new Uint8Array(await new Response(stream).arrayBuffer());
+        return new TextDecoder("utf-8").decode(decompressed);
+      }
+      throw new Error("Unsupported DOCX compression method.");
+    }
+
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+
+  throw new Error("word/document.xml was not found.");
+}
+
+async function parseImportedWordFile(file){
+  const name = file.name.toLowerCase();
+
+  if(name.endsWith(".docx")){
+    const buffer = await file.arrayBuffer();
+    const xml = await readDocxEntry(buffer,"word/document.xml");
+    return parseDocxXmlToRows(xml);
+  }
+
+  if(name.endsWith(".doc")){
+    const text = await file.text();
+    return parseWordHtmlToRows(text);
+  }
+
+  throw new Error("Please select a .doc or .docx Word file.");
+}
+
+function setExistingMode(product){
+  editingBarcode = product ? product.barcode : "";
+
+  if(product){
+    $("addBtn").style.display = "none";
+    $("updateBtn").style.display = "block";
+    $("existingProductNotice").style.display = "block";
+    $("existingProductNotice").textContent =
+      "Existing product found. The fields were filled from the imported file. Edit the values, then tap Update Existing Product.";
+  }else{
+    $("addBtn").style.display = "block";
+    $("updateBtn").style.display = "none";
+    $("existingProductNotice").style.display = "none";
+  }
+}
+
+function fillFormProduct(p){
+  $("barcode").value = p.barcode ?? "";
+  $("productName").value = p.productName ?? "";
+  $("wholesaleStock").value = p.wholesaleStock ?? "";
+  $("wholesaleCapital").value = p.wholesaleCapital ?? "";
+  $("wholesaleSelling").value = p.wholesaleSelling ?? "";
+  $("retailStock").value = p.retailStock ?? "";
+  $("retailCapital").value = p.retailCapital ?? "";
+  $("retailSelling").value = p.retailSelling ?? "";
+  $("retailUnit").value = p.retailUnit || "kg";
+  $("deviceAssigned").value = p.deviceAssigned || "Device 1";
+}
+
+function findImportedProduct(barcode){
+  const key = normalizeBarcode(barcode);
+  if(!key) return null;
+  return importedProducts.find(p => normalizeBarcode(p.barcode) === key) || null;
+}
+
+function findExportProductIndex(barcode){
+  const key = normalizeBarcode(barcode);
+  return products.findIndex(p => normalizeBarcode(p.barcode) === key);
+}
+
+function lookupBarcode(){
+  const barcode = normalizeBarcode($("barcode").value);
+  const existing = findImportedProduct(barcode);
+
+  if(existing){
+    fillFormProduct(existing);
+    setExistingMode(existing);
+    showStatus("Existing product loaded from imported file: " + existing.productName);
+    return true;
+  }
+
+  // A barcode already added to the current export list is also editable.
+  const currentIndex = findExportProductIndex(barcode);
+  if(currentIndex >= 0){
+    fillFormProduct(products[currentIndex]);
+    editingBarcode = products[currentIndex].barcode;
+    $("addBtn").style.display = "none";
+    $("updateBtn").style.display = "block";
+    $("existingProductNotice").style.display = "block";
+    $("existingProductNotice").textContent =
+      "This product is already in the export list. Edit the fields and tap Update Existing Product.";
+    return true;
+  }
+
+  setExistingMode(null);
+  return false;
+}
+
 
 function validateProduct(p){
   if(!p.barcode) return "Barcode is required.";
@@ -326,6 +604,8 @@ function clearForm(){
   $("retailSelling").value="";
   $("retailUnit").value="kg";
   $("deviceAssigned").value="Device 1";
+  editingBarcode="";
+  setExistingMode(null);
   $("barcode").focus();
 }
 
@@ -381,6 +661,110 @@ $("addBtn").addEventListener("click",()=>{
   renderProducts();
   clearForm();
   showStatus("Product added to the Word file list.");
+});
+
+$("updateBtn").addEventListener("click",()=>{
+  const p = getFormProduct();
+  if(!p.barcode){
+    showStatus("Barcode is required.","error");
+    return;
+  }
+  if(!p.productName){
+    showStatus("Product Name is required.","error");
+    return;
+  }
+
+  // Replace the imported record too, so repeated scans return the newest data.
+  const importedIndex = importedProducts.findIndex(
+    x => normalizeBarcode(x.barcode) === normalizeBarcode(editingBarcode || p.barcode)
+  );
+  if(importedIndex >= 0){
+    importedProducts[importedIndex] = {...p};
+  }else{
+    const importedMatch = findImportedProduct(p.barcode);
+    if(importedMatch){
+      const i = importedProducts.indexOf(importedMatch);
+      if(i >= 0) importedProducts[i] = {...p};
+    }
+  }
+
+  // Update an existing export row or append it if it was only in the imported file.
+  let currentIndex = findExportProductIndex(editingBarcode || p.barcode);
+  if(currentIndex < 0){
+    currentIndex = findExportProductIndex(p.barcode);
+  }
+
+  if(currentIndex >= 0){
+    products[currentIndex] = {...p};
+  }else{
+    products.push({...p});
+  }
+
+  renderProducts();
+  clearForm();
+  showStatus("Existing product updated and saved to Products to Export.");
+});
+
+$("barcode").addEventListener("change", lookupBarcode);
+$("barcode").addEventListener("blur", lookupBarcode);
+
+$("barcode").addEventListener("keydown", e=>{
+  if(e.key === "Enter"){
+    e.preventDefault();
+    lookupBarcode();
+  }
+});
+
+$("importFile").addEventListener("change", async e=>{
+  const file = e.target.files && e.target.files[0];
+  if(!file) return;
+
+  try{
+    $("importInfo").textContent = "Reading " + file.name + "…";
+    const rows = await parseImportedWordFile(file);
+    const parsed = normalizeImportedRows(rows);
+
+    if(!parsed.length){
+      throw new Error(
+        "No valid TG-POS product rows were found. Make sure the Word file uses the required headers."
+      );
+    }
+
+    importedProducts = parsed;
+
+    $("importInfo").className = "small-note import-loaded";
+    $("importInfo").textContent =
+      file.name + " loaded successfully — " + importedProducts.length + " existing product(s) available for barcode lookup.";
+    $("clearImportBtn").style.display = "block";
+
+    showStatus(
+      importedProducts.length + " existing product(s) imported. Scan a barcode to load an existing product."
+    );
+
+    // If a barcode is already in the field, immediately check it.
+    lookupBarcode();
+
+  }catch(err){
+    console.error(err);
+    importedProducts = [];
+    $("importInfo").className = "small-note";
+    $("importInfo").textContent = "Could not read the Word file.";
+    $("clearImportBtn").style.display = "none";
+    showStatus(
+      err.message || "Could not read the Word file.",
+      "error"
+    );
+  }
+});
+
+$("clearImportBtn").addEventListener("click",()=>{
+  importedProducts = [];
+  $("importFile").value = "";
+  $("importInfo").className = "small-note";
+  $("importInfo").textContent = "No existing product file loaded.";
+  $("clearImportBtn").style.display = "none";
+  clearForm();
+  showStatus("Imported product data cleared.");
 });
 
 $("clearAllBtn").addEventListener("click",()=>{
