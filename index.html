@@ -1,3 +1,18 @@
+
+
+Skip to content
+Using Gmail with screen readers
+1 of 978
+(no subject)
+Inbox
+
+Gieser Trajano <giesertrajano@gmail.com>
+Attachments
+6:11 PM (25 minutes ago)
+to me
+
+ One attachment
+  •  Scanned by Gmail
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -236,7 +251,7 @@ body.device-locked #deviceQrGate{display:flex;}
   <section class="card" id="importCard">
     <h2>Import Existing Product File</h2>
     <div class="small-note" style="margin-bottom:10px">
-      Upload an existing TG-POS Word file (.docx) using the same 10-column format. Products are loaded directly into Products to Export. The scanner uses Barcode as the exact lookup key.
+      Upload an existing TG-POS Word file (.docx) using the same 11-column format. Products are loaded directly into Products to Export. The scanner uses Barcode as the exact lookup key.
       Existing products will be updated without creating duplicates, and Device Assigned is locked to this device.
     </div>
     <input id="importFile" type="file" accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
@@ -262,6 +277,11 @@ body.device-locked #deviceQrGate{display:flex;}
       <div class="field full">
         <label for="productName">Product Name</label>
         <input id="productName" type="text" placeholder="e.g. Rice">
+      </div>
+
+      <div class="field full">
+        <label for="wholesaleProductName">Wholesale Product Name</label>
+        <input id="wholesaleProductName" type="text" placeholder="e.g. Rice — Wholesale">
       </div>
 
       <div class="field">
@@ -1739,3 +1759,5 @@ renderProducts();
 </script>
 </body>
 </html>
+add_product_wholesale_name_fixed.html
+Displaying add_product_wholesale_name_fixed.html.
