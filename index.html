@@ -398,7 +398,7 @@ function showStatus(message, type = "success") {
 }
 
 const IMPORT_HEADERS = [
-  "Barcode","Product Name","Wholesale Stock","Wholesale Capital",
+  "Barcode","Product Name","Wholesale Product Name","Wholesale Stock","Wholesale Capital",
   "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling",
   "Retail Unit","Device Assigned"
 ];
@@ -412,6 +412,7 @@ function getFormProduct(){
   return {
     barcode: $("barcode").value.trim(),
     productName: $("productName").value.trim(),
+    wholesaleProductName: $("wholesaleProductName").value.trim(),
     wholesaleStock: num("wholesaleStock"),
     wholesaleCapital: num("wholesaleCapital"),
     wholesaleSelling: num("wholesaleSelling"),
@@ -450,17 +451,21 @@ function productFromCells(cells){
     return Number.isFinite(n) ? n : 0;
   };
 
+  // Supports both the older 10-column template and the new 11-column template.
+  const hasWholesaleName = c.length >= 11;
+  const offset = hasWholesaleName ? 1 : 0;
   return {
     barcode,
     productName,
-    wholesaleStock: toNum(c[2]),
-    wholesaleCapital: toNum(c[3]),
-    wholesaleSelling: toNum(c[4]),
-    retailStock: toNum(c[5]),
-    retailCapital: toNum(c[6]),
-    retailSelling: toNum(c[7]),
-    retailUnit: c[8] || "kg",
-    deviceAssigned: c[9] || "Device 1"
+    wholesaleProductName: hasWholesaleName ? (c[2] || "") : "",
+    wholesaleStock: toNum(c[2 + offset]),
+    wholesaleCapital: toNum(c[3 + offset]),
+    wholesaleSelling: toNum(c[4 + offset]),
+    retailStock: toNum(c[5 + offset]),
+    retailCapital: toNum(c[6 + offset]),
+    retailSelling: toNum(c[7 + offset]),
+    retailUnit: c[8 + offset] || "kg",
+    deviceAssigned: c[9 + offset] || "Device 1"
   };
 }
 
@@ -481,17 +486,29 @@ function normalizeImportedRows(rows){
 
   const header = rows[headerIndex].map(normalizeHeader);
   const indexOf = name => header.indexOf(normalizeHeader(name));
-
-  const idx = IMPORT_HEADERS.map(indexOf);
-  // The new TG-POS .docx uses all 10 required columns.
-  if(idx.some(i => i < 0)) return [];
+  const requiredHeaders = ["Barcode","Product Name","Wholesale Stock","Wholesale Capital",
+    "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling","Retail Unit","Device Assigned"];
+  if(requiredHeaders.some(name => indexOf(name) < 0)) return [];
+  const hasWholesaleName = indexOf("Wholesale Product Name") >= 0;
 
   const result = [];
   const seen = new Set();
 
   for(let r=headerIndex+1;r<rows.length;r++){
     const row = rows[r];
-    const cells = IMPORT_HEADERS.map((_,i) => row[idx[i]] ?? "");
+    const cells = [
+      row[indexOf("Barcode")] ?? "",
+      row[indexOf("Product Name")] ?? "",
+      ...(hasWholesaleName ? [row[indexOf("Wholesale Product Name")] ?? ""] : []),
+      row[indexOf("Wholesale Stock")] ?? "",
+      row[indexOf("Wholesale Capital")] ?? "",
+      row[indexOf("Wholesale Selling")] ?? "",
+      row[indexOf("Retail Stock")] ?? "",
+      row[indexOf("Retail Capital")] ?? "",
+      row[indexOf("Retail Selling")] ?? "",
+      row[indexOf("Retail Unit")] ?? "",
+      row[indexOf("Device Assigned")] ?? ""
+    ];
     const p = productFromCells(cells);
     if(!p) continue;
 
@@ -694,6 +711,7 @@ function setExistingMode(product){
 function fillFormProduct(p){
   $("barcode").value = p.barcode ?? "";
   $("productName").value = p.productName ?? "";
+  $("wholesaleProductName").value = p.wholesaleProductName ?? "";
   $("wholesaleStock").value = p.wholesaleStock ?? "";
   $("wholesaleCapital").value = p.wholesaleCapital ?? "";
   $("wholesaleSelling").value = p.wholesaleSelling ?? "";
@@ -757,6 +775,7 @@ function validateProduct(p){
 function clearForm(){
   $("barcode").value="";
   $("productName").value="";
+  $("wholesaleProductName").value="";
   $("wholesaleStock").value="";
   $("wholesaleCapital").value="";
   $("wholesaleSelling").value="";
@@ -1530,7 +1549,7 @@ function closeScanner(){
 /* =========================
    WORD FILE GENERATION
    Matches uploaded template:
-   Barcode | Product Name | Wholesale Stock | Wholesale Capital |
+   Barcode | Product Name | Wholesale Product Name | Wholesale Stock | Wholesale Capital |
    Wholesale Selling | Retail Stock | Retail Capital | Retail Selling |
    Retail Unit | Device Assigned
    ========================= */
@@ -1542,7 +1561,7 @@ async function createWordFile(){
   */
 
   const headers = [
-    "Barcode","Product Name","Wholesale Stock","Wholesale Capital",
+    "Barcode","Product Name","Wholesale Product Name","Wholesale Stock","Wholesale Capital",
     "Wholesale Selling","Retail Stock","Retail Capital","Retail Selling",
     "Retail Unit","Device Assigned"
   ];
@@ -1567,6 +1586,7 @@ async function createWordFile(){
     `<w:tr>` +
       cell(p.barcode) +
       cell(p.productName) +
+      cell(p.wholesaleProductName || "") +
       cell(formatDocNumber(p.wholesaleStock)) +
       cell(formatDocMoney(p.wholesaleCapital)) +
       cell(formatDocMoney(p.wholesaleSelling)) +
